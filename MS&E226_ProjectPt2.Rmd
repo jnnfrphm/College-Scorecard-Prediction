@@ -1,0 +1,208 @@
+---
+title: "Project Pt. 2"
+author: "Jennifer Pham"
+output:
+  pdf_document: 
+    number_sections: true
+  html_notebook: 
+    number_sections: true
+---
+
+```{r}
+library(knitr)
+library(cvTools)
+library(data.table)
+library(tibble)
+
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+
+```{r}
+test <- read.csv("~/Desktop/MS&E Project/test.csv")
+test <-subset(test, STABBR !="RI")
+
+```
+
+
+```{r}
+options(scipen = 0)
+
+set.seed(1)
+model_test = lm(formula = md_earn_wne_p10 ~ gt_25k_p6 + UGDS_ASIAN + PREDDEG + 
+    STABBR + PPTUG_EF + GRAD_DEBT_MDN_SUPP + PCTFLOAN + CONTROL + 
+    UGDS_WHITE + UGDS_NRA + DISTANCEONLY + UG25abv + PCTPELL + 
+    UGDS_2MOR + RPY_3YR_RT_SUPP, data = test)
+cvFit(model_test, data=test, y=test$md_earn_wne_p10, K = 10)
+
+
+```
+
+## Inference
+```{r}
+train <- read.csv("~/Desktop/MS&E Project/train.csv")
+train$X <- NULL
+```
+
+```{r}
+
+model_train = lm(formula = md_earn_wne_p10 ~ gt_25k_p6 + UGDS_ASIAN + PREDDEG + 
+    STABBR + PPTUG_EF + GRAD_DEBT_MDN_SUPP + PCTFLOAN + CONTROL + 
+    UGDS_WHITE + UGDS_NRA + DISTANCEONLY + UG25abv + PCTPELL + 
+    UGDS_2MOR + RPY_3YR_RT_SUPP, data = train)
+
+```
+
+```{r}
+co <- data.frame(summary(model_train)$coefficients[, 1])
+co <- rownames_to_column(co, "VAR_NAME")
+colnames(co) <- c("VAR_NAME", "COEFFICIENT")
+
+confidence_o = data.frame(summary(model_train)$coefficients[, 1:2])
+confidence_o <- rownames_to_column(confidence_o, "VAR_NAME")
+colnames(confidence_o) <- c("VAR_NAME", "COEFFICIENT", "STDERROR")
+```
+
+```{r}
+summary(model_train)
+
+```
+
+
+
+
+```{r}
+confidence_o$Lower = confidence_o$COEFFICIENT - 1.96*confidence_o$STDERROR
+confidence_o$Upper = confidence_o$COEFFICIENT + 1.96*confidence_o$STDERROR
+```
+
+```{r}
+summary(model_test)
+```
+
+
+# Bootstrapping
+```{r}
+set.seed(4)
+sample_coef <- NULL
+boots =  data.frame(summary(model_train)$coefficients[, 1])[-1]
+boots = rownames_to_column(boots, "VAR_NAME")
+
+for (i in 1:10000) {
+  sample = train[sample(1:nrow(train), nrow(train), replace = TRUE), ]
+  model_boot = lm(formula = md_earn_wne_p10 ~ gt_25k_p6 + UGDS_ASIAN + PREDDEG + 
+    STABBR + PPTUG_EF + GRAD_DEBT_MDN_SUPP + PCTFLOAN + CONTROL + 
+    UGDS_WHITE + UGDS_NRA + DISTANCEONLY + UG25abv + PCTPELL + 
+    UGDS_2MOR + RPY_3YR_RT_SUPP, data = sample)
+  
+  coeff = data.frame(summary(model_boot)$coefficients[, 1])
+  colnames(coeff)[1] <- paste0("sample", i)
+  coeff = rownames_to_column(coeff, "VAR_NAME")
+  boots = merge(boots, coeff, by.x = "VAR_NAME", by.y = "VAR_NAME", all.y = TRUE)
+}
+
+names <- co$VAR_NAME
+```
+
+
+```{r}
+set.seed(4)
+
+sample1 = train[sample(1:nrow(train), nrow(train), replace = TRUE), ]
+sample2 = train[sample(1:nrow(train), nrow(train), replace = TRUE), ]
+```
+
+
+```{r}
+boots.T <- t(boots[,2:ncol(boots)])
+colnames(boots.T) <- boots[,1] 
+bootstraps <- data.frame(boots.T)
+colnames(bootstraps) <- names
+
+```
+
+
+```{r}
+
+confidence = data.frame(matrix(ncol = 4, nrow = 0))
+colnames(confidence) <- c('VarName', 'StanErr', 'Lower', 'Upper')
+
+
+#quant = data.frame(matrix(ncol = 4, nrow = 0))
+#colnames(quant) <- c('VarName', 'StanErr', 'Lower', 'Upper')
+
+
+for (i in colnames(bootstraps)) {
+   SE = sd(unlist(bootstraps[i]))
+   Lower = as.numeric(unlist(co$COEFFICIENT[co$VAR_NAME == i] - 1.96*SE))
+   Upper = as.numeric(unlist(co$COEFFICIENT[co$VAR_NAME == i] + 1.96*SE))
+   #Lowerq = quantile(unlist(bootstraps[i]), 0.025, na.rm = TRUE)
+   #Upperq = quantile(unlist(bootstraps[i]), 0.0975, na.rm = TRUE)
+   confidence[nrow(confidence) + 1,] = c(i, SE, Lower, Upper)
+   #quant[nrow(quant) + 1,] = c(i, SE, Lowerq, Upperq)
+   
+}
+
+
+
+confidence[,2:4]= sapply(confidence[,2:4], as.numeric)
+```
+
+
+```{r}
+
+
+```
+
+
+
+```{r}
+options(scipen = 999)
+confidence
+confidence_o
+
+
+
+```
+
+```{r}
+lm_confidence = confidence_o
+lm_confidence$COEFFICIENT <- NULL
+colnames(lm_confidence) <- c("VARNAME", "STDERROR_LM", "LOWER_LM", "UPPER_LM")
+
+
+boot_confidence = confidence
+colnames(boot_confidence) <- c("VARNAME", "STDERROR_BOOT", "LOWER_BOOT", "UPPER_BOOT")
+
+
+
+```
+
+
+
+```{r}
+
+confident = merge(lm_confidence, boot_confidence, by.x = "VARNAME", by.y = "VARNAME")
+#confident$STDERROR_LM = NULL
+#confident$STDERROR_BOOT = NULL
+confident
+
+
+```
+
+
+```{r}
+write.csv(confident, "confidence_interval.csv")
+#write.csv(bootstraps, "boots.csv")
+
+
+```
+
+
+
+```{r}
+library(ggplot2)
+ggplot(bootstraps, aes(x=DISTANCEONLY)) + geom_histogram()
+
+```
+

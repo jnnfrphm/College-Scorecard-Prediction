@@ -1,0 +1,354 @@
+---
+title: "MS&E 226 Project"
+author: "Jennifer Pham"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+```{r}
+library(knitr)
+library(ggplot2)
+library(tidyverse)
+library(dplyr) 
+library(lares)
+library(glmnet)
+library(cvTools)
+library(reshape2)
+library(caret)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+
+```{r}
+scorecard <- read.csv("~/Desktop/MS&E Project/CS_subset.csv")
+```
+
+
+# Clean Data
+```{r}
+is.na(scorecard) <- scorecard == "NULL"
+is.na(scorecard) <- scorecard == "PrivacySuppressed"
+scorecard <- scorecard %>% drop_na(md_earn_wne_p10) %>% drop_na(GRAD_DEBT_MDN_SUPP)
+scorecard$INSTNM <- NULL
+scorecard$CITY <- NULL
+#scorecard$STABBR <- NULL
+scorecard$GRAD_DEBT_MDN10YR_SUPP <- NULL
+```
+
+
+```{r}
+scorecard = scorecard[, which(colMeans(!is.na(scorecard)) > 0.90)]
+#scorecard[!complete.cases(scorecard), ]
+na <-scorecard[rowSums(is.na(scorecard)) > 0, ]               
+```
+
+
+```{r}
+scorecard$STABBR <- as.factor(scorecard$STABBR)
+scorecard$PREDDEG <- as.factor(scorecard$PREDDEG)
+scorecard$CONTROL <- as.factor(scorecard$CONTROL)
+scorecard$LOCALE <- as.factor(scorecard$LOCALE)
+scorecard$DISTANCEONLY <- as.factor(scorecard$DISTANCEONLY)
+
+factor_cols <- sapply(scorecard, Negate(is.factor))
+scorecard[ , factor_cols] <- as.data.frame(apply(scorecard[ , factor_cols], 2, as.numeric))
+```
+
+```{r}
+levels(scorecard$PREDDEG) <- c('Not Classified', 'Certificate', 'Associate', 'Bachelor', 'Graduate')
+levels(scorecard$CONTROL) <- c('Public', 'Private NonProfit', 'Private For-Profit')
+levels(scorecard$LOCALE) <- c("LargeCITY", "MidCITY", "SmallCITY", "LargeSUBURB", "MidSUBURB", "SmallSUBURB", "FringeTOWN", "DistantTOWN", "RemoteTOWN", "FringeRURAL", "DistantRURAL", "RemoteRURAL")
+scorecard <- subset(scorecard, PREDDEG !="Not Classified")
+scorecard <- scorecard %>% drop_na()
+
+
+```
+
+```{r}
+set.seed(1)
+in.train = sample(nrow(scorecard), size = round(nrow(scorecard) * .8))
+train = scorecard[in.train, ]
+test = scorecard[-in.train, ]
+train <- droplevels(train)
+train<-subset(train, STABBR !="VI")
+
+train_class = train
+
+```
+
+
+
+
+```{r}
+numeric <- select_if(train, is.numeric)
+cor(numeric)
+
+corr_cross(train, max_pvalue = 0.05, top = 15)
+corr_var(train, md_earn_wne_p10, top = 10)
+corr_var(train, GRAD_DEBT_MDN_SUPP, top = 10)
+
+```
+
+
+# Prediction
+```{r}
+set.seed(1)
+## Baseline model
+baseline_mean = lm(md_earn_wne_p10 ~ 1, data = train)
+cvFit(baseline_mean, data=train, y=train$md_earn_wne_p10, K = 10)
+
+baseline_all = lm(md_earn_wne_p10 ~ ., data = train)
+cvFit(baseline_all, data=train, y=train$md_earn_wne_p10, K = 10)
+```
+```{r}
+numeric <- select_if(train, is.numeric)
+melt.numeric = melt(numeric)
+ggplot(data = melt.numeric, aes(x = value)) + stat_density() +  facet_wrap(~variable, scales = "free")
+```
+
+
+```{r}
+trainr_log = train
+log_cols <- c("UGDS", "UGDS_BLACK", "UGDS_HISP", "UGDS_ASIAN", "UGDS_AIAN", "UGDS_NHPI", "UGDS_2MOR", "UGDS_NRA", "UGDS_UNKN", "PPTUG_EF")
+trainr_log[log_cols] = log(trainr_log[log_cols] + .01)
+numerict <- select_if(trainr_log, is.numeric)
+melt.numerict = melt(numerict)
+ggplot(data = melt.numerict, aes(x = value)) + sat_density() +  facet_wrap(~variable, scales = "free")
+```
+
+```{r}
+set.seed(1)
+baseline_all_log = lm(md_earn_wne_p10 ~ ., data = trainr_log)
+cvFit(baseline_all_log, data=trainr_log, y=trainr_log$md_earn_wne_p10, K = 10)
+```
+```{r}
+set.seed(1)
+fm.lower = lm(md_earn_wne_p10 ~ 1, data = train)
+fm.upper = lm(md_earn_wne_p10 ~ ., data = train)
+forward <- step(fm.lower, scope = formula(fm.upper), direction = "forward", trace=FALSE)
+
+cvFit(forward, data=train, y=train$md_earn_wne_p10, K = 10)
+```
+
+
+```{r}
+set.seed(1)
+
+backward <- step(fm.upper, scope = formula(fm.upper), direction = "backward", trace=FALSE)
+cvFit(backward, data=train, y=train$md_earn_wne_p10, K = 10)
+
+```
+
+```{r}
+stan_train = train
+stan_num <- colnames(select_if(stan_train, is.numeric))
+stan_num <- stan_num[! stan_num %in% c("md_earn_wne_p10")]
+stan_train[stan_num] = scale(train[stan_num])
+```
+
+```{r}
+
+X = model.matrix(md_earn_wne_p10 ~ ., stan_train)
+Y = stan_train$md_earn_wne_p10
+
+```
+
+```{r}
+# Ridge Regression
+
+cv.outr = cv.glmnet(X, Y, alpha = 0,lambda = lambdas)
+bestlamr = cv.outr$lambda.min
+fm.ridge = glmnet(X, Y, alpha = 0, lambda = bestlamr, thresh = 1e-12)
+```
+
+```{r}
+set.seed(1)
+cvFit(fm.ridge, data=X, y=Y, K = 10)
+
+
+fittedvalridge = predict(fm.ridge, s=bestlamr, newx = X)
+
+```
+
+```{r}
+
+cv.outl <- cv.glmnet(X, Y, alpha = 1, lambda = lambdas)
+bestlaml = cv.outl$lambda.min
+
+fm.lasso = glmnet(X, Y, alpha = 1, lambda = bestlaml, thresh = 1e-12)
+```
+
+```{r}
+set.seed(1)
+cvFit(fm.lasso, data=X, y=Y, K = 10)
+
+fittedvallasso = predict(fm.lasso, s=bestlamr, newx = X)
+sqrt(mean((Y-fittedvallasso)^2))
+```
+
+
+# Logistic
+```{r}
+median_debt <-median(train$GRAD_DEBT_MDN_SUPP)
+train_class$DEBTLEVEL <- ifelse(train_class$GRAD_DEBT_MDN_SUPP >= median_debt, 1, 0)
+train_class$DEBTLEVEL <- as.logical(train_class$DEBTLEVEL)
+train_class$GRAD_DEBT_MDN_SUPP <- NULL
+corr_var(train_class, DEBTLEVEL, top = 10)
+```
+
+```{r}
+fm = glm(formula = DEBTLEVEL ~ ., family = "binomial", data = train_class)
+vals = rep(0, dim(train_class)[1])
+vals[fm$fitted.values > .5] = 1
+table(vals, train_class$DEBTLEVEL)
+mean(vals == train_class$DEBTLEVEL)
+```
+
+
+```{r}
+set.seed(321)
+k = 10
+f <- createFolds(y=train_class$DEBTLEVEL, k)
+train_fold <- function (i) {
+  train_class[-unlist(f[i]),]
+}
+test_fold <- function (i) {
+  train_class[unlist(f[i]),]
+}
+```
+
+```{r}
+
+accuracy <- c()
+
+for (i in 1:k) {
+  b_model = glm(DEBTLEVEL ~ ., data=train_fold(i), family = binomial)
+  predict_result <- predict(b_model, newdata=test_fold(i), type="response")
+  predict_logit <- ifelse(predict_result >= 0.5, 1, 0)
+  confusion <- table(predict_logit, test_fold(i)$DEBTLEVEL)
+  accuracy[i] = (confusion[1,1]+confusion[2,2])/dim(test_fold(i))[1]
+}
+mean(accuracy)
+
+```
+
+
+```{r}
+log_cols_c <- c("UGDS", "UGDS_BLACK", "UGDS_HISP", "UGDS_ASIAN", "UGDS_AIAN", "UGDS_NHPI", "UGDS_2MOR", "UGDS_NRA", "UGDS_UNKN", "PPTUG_EF", "md_earn_wne_p10")
+train_class_log = train_class
+train_class_log[log_cols_c] = log(train_class_log[log_cols_c] + .01)
+
+
+fm = glm(formula = DEBTLEVEL ~ ., family = "binomial", data = train_class_log)
+vals = rep(0, dim(train_class_log)[1])
+vals[fm$fitted.values > .5] = 1
+table(vals, train_class_log$DEBTLEVEL)
+mean(vals == train_class_log$DEBTLEVEL)
+```
+
+
+```{r}
+set.seed(321)
+k = 10
+f <- createFolds(y=train_class_log$DEBTLEVEL, k)
+train_fold_log <- function (i) {
+  train_class_log[-unlist(f[i]),]
+}
+test_fold_log <- function (i) {
+  train_class_log[unlist(f[i]),]
+}
+```
+
+```{r}
+
+accuracy <- c()
+
+for (i in 1:k) {
+  b_model = glm(DEBTLEVEL ~ ., data=train_fold_log(i), family = binomial)
+  predict_result <- predict(b_model, newdata=test_fold_log(i), type="response")
+  predict_logit <- ifelse(predict_result >= 0.5, 1, 0)
+  confusion <- table(predict_logit, test_fold(i)$DEBTLEVEL)
+  accuracy[i] = (confusion[1,1]+confusion[2,2])/dim(test_fold(i))[1]
+}
+mean(accuracy)
+
+```
+
+```{r}
+## Forward
+set.seed(1)
+fm.lower.class = glm(formula = DEBTLEVEL ~ 1, family = "binomial", data = train_class)
+fm.upper.class = glm(formula = DEBTLEVEL ~ ., family = "binomial", data = train_class)
+forward <- step(fm.lower.class, scope = list(lower = fm.lower.class, upper = fm.upper.class), direction = "forward", trace=FALSE)
+```
+
+
+```{r}
+set.seed(321)
+k = 10
+f <- createFolds(y=train_class_log$DEBTLEVEL, k)
+  train_fold <- function (i) {
+  train_class_log[-unlist(f[i]),]
+}
+  test_fold <- function (i) {
+  train_class_log[unlist(f[i]),]
+}
+```
+
+```{r}
+
+accuracy <- c()
+
+for (i in 1:k) {
+  b_model = glm(formula = DEBTLEVEL ~ PREDDEG + PCTFLOAN + STABBR + md_earn_wne_p10 + 
+    CONTROL + PCTPELL + RPY_3YR_RT_SUPP + UG25abv + PPTUG_EF + 
+    UGDS_2MOR + gt_25k_p6 + DISTANCEONLY + UGDS_NRA + UGDS_ASIAN + 
+    UGDS + UGDS_NHPI, family = "binomial", data=train_fold(i))
+  predict_result <- predict(b_model, newdata=test_fold(i), type="response")
+  predict_logit <- ifelse(predict_result >= 0.5, 1, 0)
+  confusion <- table(predict_logit, test_fold(i)$DEBTLEVEL)
+  accuracy[i] = (confusion[1,1]+confusion[2,2])/dim(test_fold(i))[1]
+}
+mean(accuracy)
+
+```
+```{r}
+## Backward
+set.seed(1)
+backward <- step(fm.upper.class, scope = list(lower = fm.lower.class, upper = fm.upper.class), direction = "backward", trace=FALSE)
+```
+
+
+```{r}
+set.seed(321)
+k = 10
+f <- createFolds(y=train_class_log$DEBTLEVEL, k)
+  train_fold <- function (i) {
+  train_class_log[-unlist(f[i]),]
+}
+  test_fold <- function (i) {
+  train_class_log[unlist(f[i]),]
+}
+```
+
+```{r}
+
+accuracy <- c()
+
+for (i in 1:k) {
+  
+  b_model = glm(formula = DEBTLEVEL ~ STABBR + PREDDEG + CONTROL + DISTANCEONLY + 
+    UGDS + UGDS_WHITE + UGDS_BLACK + UGDS_HISP + UGDS_ASIAN + 
+    UGDS_AIAN + UGDS_NHPI + UGDS_UNKN + PPTUG_EF + PCTPELL + 
+    PCTFLOAN + UG25abv + RPY_3YR_RT_SUPP + md_earn_wne_p10 + 
+    gt_25k_p6, family = "binomial", data=train_fold(i))
+  predict_result <- predict(b_model, newdata=test_fold(i), type="response")
+  predict_logit <- ifelse(predict_result >= 0.5, 1, 0)
+  confusion <- table(predict_logit, test_fold(i)$DEBTLEVEL)
+  accuracy[i] = (confusion[1,1]+confusion[2,2])/dim(test_fold(i))[1]
+}
+mean(accuracy)
+
+```
+
